@@ -970,12 +970,36 @@ def store_memory(text_to_store: str, target="core"):
 
 # --- OLLAMA TOOL DEFINITIONS & EXECUTION ---
 def tool_open_app(app_name: str):
-    app_lower = app_name.lower()
-    if "notepad" in app_lower: subprocess.Popen(["notepad.exe"])
-    elif "code" in app_lower or "vs code" in app_lower: os.system("code")
-    elif "folder" in app_lower: os.system("start .")
-    else: webbrowser.open(f"https://www.google.com/search?q={app_name}")
-    return f"Opened {app_name} successfully."
+    app_lower = app_name.lower().strip()
+    if "notepad" in app_lower: 
+        subprocess.Popen(["notepad.exe"])
+        return "Opened Notepad successfully."
+    elif "code" in app_lower or "vs code" in app_lower: 
+        subprocess.Popen(["code"])
+        return "Opened VS Code successfully."
+    elif "folder" in app_lower or "explorer" in app_lower: 
+        subprocess.Popen(["explorer.exe", "."])
+        return "Opened current folder successfully."
+    
+    if app_lower.startswith("http://") or app_lower.startswith("https://"):
+        webbrowser.open(app_lower)
+        return f"Navigated directly to URL: {app_lower}"
+    elif ".com" in app_lower or ".org" in app_lower or ".net" in app_lower:
+        webbrowser.open(f"https://{app_lower}")
+        return f"Navigated directly to website: {app_lower}"
+    
+    common_sites = ["youtube", "facebook", "twitter", "reddit", "github", "twitch"]
+    if app_lower in common_sites:
+        webbrowser.open(f"https://www.{app_lower}.com")
+        return f"Opened {app_lower}.com successfully."
+    
+    return f"Could not resolve application: {app_name}"
+
+def tool_google_search(query: str):
+    import urllib.parse
+    safe_query = urllib.parse.quote(query)
+    webbrowser.open(f"https://www.google.com/search?q={safe_query}")
+    return f"Executed a Google search for: {query}"
 
 def tool_check_system():
     cpu = psutil.cpu_percent(interval=1)
@@ -995,11 +1019,23 @@ ollama_tools = [
         'type': 'function',
         'function': {
             'name': 'tool_open_app',
-            'description': 'Open a local application like notepad, vs code, or search the web.',
+            'description': 'Open local apps (notepad, vs code) or direct websites (youtube.com).',
             'parameters': {
                 'type': 'object',
-                'properties': {'app_name': {'type': 'string', 'description': 'The application or website name'}},
+                'properties': {'app_name': {'type': 'string', 'description': 'App or website name'}},
                 'required': ['app_name']
+            }
+        }
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'tool_google_search',
+            'description': 'Search Google for tutorials, videos, or information.',
+            'parameters': {
+                'type': 'object',
+                'properties': {'query': {'type': 'string', 'description': 'The search query string'}},
+                'required': ['query']
             }
         }
     },
@@ -1027,6 +1063,7 @@ ollama_tools = [
 
 def query_ollama_with_tools(prompt: str, system_prompt: str) -> str:
     import ctypes
+    import re
     try:
         messages = [
             {'role': 'system', 'content': system_prompt},
@@ -1042,46 +1079,50 @@ def query_ollama_with_tools(prompt: str, system_prompt: str) -> str:
         content = msg.get('content', '') or ""
         content = content.strip()
         
-        # 🛑 1. HALLUCINATION FILTER: Catch raw JSON leaking into the chat box
+        # Hallucination JSON filter
         if "{" in content and '"name"' in content and "tool_" in content:
-            print(f"[Hallucination Caught]: {content}")
-            return "I got a little confused trying to run that command! Can we try again, Sean?"
+            return "I got a little confused trying to process that command! Can we try again, Sean?"
 
-        # 2. PROPER TOOL CALL EXECUTION & APPROVAL GATEWAY
         if msg.get('tool_calls'):
             for tool in msg['tool_calls']:
                 fname = tool['function']['name']
                 fargs = tool['function']['arguments']
                 
-                # 🛑 3. SYSTEM SECURITY POPUP (Thread-Safe Windows MessageBox)
-                # Pauses the background thread until you click Yes or No
                 prompt_msg = f"Remu-chan wants to execute a system command.\n\nAction: {fname}\nParameters: {fargs}\n\nDo you allow this?"
-                
-                # 4 = Yes/No buttons | 0x30 = Warning Icon | 0x40000 = Topmost window
                 user_approval = ctypes.windll.user32.MessageBoxW(0, prompt_msg, "Remu-chan Action Approval", 4 | 0x30 | 0x40000)
                 
-                if user_approval == 6:  # 6 represents 'IDYES'
-                    print(f"[Ollama Tool-Use]: User APPROVED {fname}")
+                if user_approval == 6:  # IDYES
                     tool_result = ""
                     if fname == 'tool_open_app': tool_result = tool_open_app(**fargs)
+                    elif fname == 'tool_google_search': tool_result = tool_google_search(**fargs)
                     elif fname == 'tool_check_system': tool_result = tool_check_system()
                     elif fname == 'tool_run_command': tool_result = tool_run_command(**fargs)
                 else:
-                    print(f"[Ollama Tool-Use]: User DENIED {fname}")
-                    # Feed the denial back so she knows she was blocked
-                    tool_result = "The user DENIED your request to run this tool. Apologize to Sean and ask what else you can do."
+                    tool_result = "The user DENIED your request. Apologize to Sean."
                 
-                # Feed the result (or the denial) back to her brain
                 messages.append(msg)
                 messages.append({'role': 'tool', 'content': str(tool_result), 'name': fname})
                 
                 final_response = ollama.chat(model='llama3.2:3b', messages=messages)
-                return final_response['message']['content'].strip()
-                
-        return content
+                content = final_response['message']['content'].strip()
+
+        # 🛑 EXPRESSION PARSER: Translate asterisks into physical sprite changes
+        lower_content = content.lower()
+        if "pout" in lower_content or "angry" in lower_content:
+            if ui: ui.root.after(0, lambda: ui.set_face("angry"))
+        elif "laugh" in lower_content or "giggle" in lower_content:
+            if ui: ui.root.after(0, lambda: ui.set_face("laugh"))
+        elif "smile" in lower_content or "happy" in lower_content:
+            if ui: ui.root.after(0, lambda: ui.set_face("smile"))
+        elif "sad" in lower_content:
+            if ui: ui.root.after(0, lambda: ui.set_face("sad"))
+            
+        # Strip out text asterisks so she never speaks stage directions aloud
+        clean_content = re.sub(r'\*[^*]+\*', '', content).strip()
+        return clean_content if clean_content else content
     except Exception as e:
         print(f"[Ollama Tool Error]: {e}")
-        return "I'm having trouble processing that tool request..."
+        return "I'm having trouble processing that request..."
 
 def analyze_screen_vision(user_prompt: str):
     try:
